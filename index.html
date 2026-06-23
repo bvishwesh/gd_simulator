@@ -1,0 +1,94 @@
+import * as THREE from 'three';
+import { TalkingHead } from "talkinghead";
+
+const container = document.getElementById('viewport');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1a1a);
+
+// 1. Fixed Camera Setup (Elevated, looking down at the entire table)
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+camera.position.set(0, 2.5, 4.5); // Fixed position: high up and pulled back
+camera.lookAt(0, 0.8, 0);       // Always locked onto the center of the table
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+container.appendChild(renderer.domElement);
+
+// Global Lights
+scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+dirLight.position.set(0, 5, 5);
+scene.add(dirLight);
+
+// 2. The Participants Dictionary
+const participants = {};
+
+// 3. Helper to Seat a Character
+async function seatParticipant(id, modelUrl, gender, angle) {
+  // Use avatarOnly: true so they don't override our fixed camera
+  const avatar = new TalkingHead(container, {
+    avatarOnly: true,
+    avatarOnlyCamera: camera
+  });
+
+  await avatar.showAvatar({ url: modelUrl, body: gender });
+
+  // Arrange them in a 2.5-meter circle around the center (0,0,0)
+  const radius = 2.5;
+  const x = radius * Math.cos(angle);
+  const z = radius * Math.sin(angle);
+
+  // Set position (assume sitting height adjustments if your models require it)
+  avatar.armature.position.set(x, 0, z);
+  
+  // Make them face the center of the discussion table
+  avatar.armature.lookAt(0, 0, 0);
+
+  scene.add(avatar.armature);
+  participants[id] = avatar;
+}
+
+// 4. Initialize the 6 Seated Characters
+async function initializeGD() {
+  // 6 Angles evenly divided around a 360-degree circle (2 * PI)
+  const angles = [
+    0, 
+    (2 * Math.PI) / 6, 
+    (4 * Math.PI) / 6, 
+    Math.PI, 
+    (8 * Math.PI) / 6, 
+    (10 * Math.PI) / 6
+  ];
+
+  // Load all 6 participants into their fixed positions
+  await seatParticipant("p1", "./avatars/char1.glb", "M", angles[0]);
+  await seatParticipant("p2", "./avatars/char2.glb", "F", angles[1]);
+  await seatParticipant("p3", "./avatars/char3.glb", "M", angles[2]);
+  await seatParticipant("p4", "./avatars/char4.glb", "F", angles[3]);
+  await seatParticipant("p5", "./avatars/char5.glb", "M", angles[4]);
+  await seatParticipant("p6", "./avatars/char6.glb", "F", angles[5]);
+
+  // Master animation loop updating all 6 sitting characters simultaneously
+  const clock = new THREE.Clock();
+  function animate() {
+    requestAnimationFrame(animate);
+    const delta = clock.getDelta() * 1000;
+    
+    // Keeps everyone breathing, blinking, and active while waiting
+    Object.values(participants).forEach(avatar => avatar.animate(delta));
+    
+    renderer.render(scene, camera);
+  }
+  animate();
+}
+
+// 5. Connect your OpenRouter text & local audio module output here
+export async function triggerSpeaker(participantId, generatedAudioData) {
+  const speaker = participants[participantId];
+  if (speaker) {
+    // Only the specified character plays audio and performs perfect local lip-sync
+    speaker.speakAudio(generatedAudioData);
+  }
+}
+
+initializeGD().catch(console.error);
