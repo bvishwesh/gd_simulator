@@ -1,0 +1,19 @@
+{
+  "participants": [
+    {
+      "id": "P1",
+      "name": "Aggressive Dominator",
+      "stance": "for"
+    },
+    {
+      "id": "P2",
+      "name": "Logical Analyst",
+      "stance": "against"
+    },
+    {
+      "id": "P3",
+      "name": "Data Driven Speaker",
+      "stance": "for"
+    }
+  ]
+}
