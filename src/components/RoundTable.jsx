@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-const AVATAR_COUNT = 5;
+const AVATAR_COUNT = 6;
 const SEAT_RADIUS = 2.8;
 const TABLE_RADIUS = 1.6;
 const TABLE_HEIGHT = 0.75;
