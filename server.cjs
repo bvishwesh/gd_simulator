@@ -4,6 +4,7 @@ const { WebSocketServer } = require('ws');
 const OpenAI = require('openai');
 const path = require('path');
 const fs = require('fs');
+const { spawn } = require('child_process');
 require('dotenv').config();
 
 const PORT = process.env.PORT || 3000;
@@ -19,6 +20,14 @@ const openai = new OpenAI({
   baseURL: 'https://openrouter.ai/api/v1',
 });
 
+const VOICE_MAP = {
+  P1: 'en-US-GuyNeural',
+  P2: 'en-US-JennyNeural',
+  P3: 'en-US-BrianNeural',
+  P4: 'en-US-AriaNeural',
+  P5: 'en-US-ChristopherNeural',
+};
+
 const PARTICIPANTS = [
   { id: 'P1', name: 'Aggressive Dominator', weight: 40, seatIndex: 0 },
   { id: 'P2', name: 'Logical Analyst', weight: 25, seatIndex: 1 },
@@ -27,10 +36,9 @@ const PARTICIPANTS = [
   { id: 'P5', name: 'Introvert', weight: 5, seatIndex: 4 },
 ];
 
-const EMOTIONS = [
-  'neutral', 'happy', 'confident', 'thinking',
-  'skeptical', 'agreeing', 'disagreeing', 'surprised', 'angry',
-];
+const AUDIO_DIR = path.join(__dirname, 'dist', 'audio');
+
+try { fs.mkdirSync(AUDIO_DIR, { recursive: true }); } catch (_) {}
 
 function chooseWeighted(arr) {
   const total = arr.reduce((s, p) => s + p.weight, 0);
@@ -89,7 +97,6 @@ function pickEmotion(intent) {
 function buildPrompt(topic, phase, speaker, target, intent, history) {
   const participant = PARTICIPANTS.find(p => p.id === speaker);
   const recentHistory = history.slice(-12);
-
   return `
 You are participating in a campus placement Group Discussion.
 
@@ -114,6 +121,38 @@ RULES:
 - Be concise and natural.
 
 Return ONLY the response text.`.trim();
+}
+
+function generateAudio(text, speakerId, turn) {
+  return new Promise((resolve) => {
+    const voice = VOICE_MAP[speakerId] || 'en-US-GuyNeural';
+    const filename = `turn_${turn}.mp3`;
+    const filepath = path.join(AUDIO_DIR, filename);
+
+    const proc = spawn('python', [
+      '-m', 'edge_tts',
+      '--voice', voice,
+      '--text', text,
+      '--write-media', filepath,
+    ]);
+
+    let errOutput = '';
+    proc.stderr.on('data', (d) => { errOutput += d.toString(); });
+
+    proc.on('close', (code) => {
+      if (code === 0 && fs.existsSync(filepath)) {
+        resolve(`/audio/${filename}`);
+      } else {
+        console.warn(`TTS failed (${code}): ${errOutput.substring(0, 100)}`);
+        resolve(null);
+      }
+    });
+
+    proc.on('error', (err) => {
+      console.warn('TTS spawn error:', err.message);
+      resolve(null);
+    });
+  });
 }
 
 const app = express();
@@ -158,11 +197,58 @@ class Simulation {
     this.userWaiting = false;
     this.userTimeout = null;
     this.speakTimeout = null;
+    this.currentSpeakerId = null;
+
+    // Pre-generation cache properties
+    this.nextTurnCache = null;
+    this.preGeneratingPromise = null;
+    this.userWantsToSpeak = false;
+    this.queuedUserMessage = null;
+
+    // Cancelable delay state
+    this._delayResolve = null;
+    this._delayTimeout = null;
   }
 
   send(event) {
     if (this.ws && this.ws.readyState === 1) {
       this.ws.send(JSON.stringify(event));
+    }
+  }
+
+  async preGenerateNextTurn() {
+    try {
+      const nextTurnNum = this.turn + 1;
+      const phase = getPhase(nextTurnNum);
+      const speaker = chooseWeighted(PARTICIPANTS);
+      const target = chooseTarget(speaker.id, this.history);
+      const intent = getIntent(phase);
+      const emotion = pickEmotion(intent);
+
+      const prompt = buildPrompt(this.topic, phase, speaker.id, target, intent, this.history);
+
+      const response = await openai.chat.completions.create({
+        model: 'openai/gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 200,
+      });
+
+      const text = response.choices[0].message.content.trim();
+      const audioUrl = await generateAudio(text, speaker.id, nextTurnNum);
+
+      this.nextTurnCache = {
+        speaker,
+        target,
+        text,
+        emotion,
+        intent,
+        phase,
+        turn: nextTurnNum,
+        audioUrl,
+      };
+    } catch (err) {
+      console.error('Pre-generation error:', err.message);
+      this.nextTurnCache = null;
     }
   }
 
@@ -172,63 +258,86 @@ class Simulation {
 
     let consecutiveErrors = 0;
 
-    while (this.running && consecutiveErrors < 3) {
-      this.turn++;
-      const phase = getPhase(this.turn);
-      const speaker = chooseWeighted(PARTICIPANTS);
-      const target = chooseTarget(speaker.id, this.history);
-      const intent = getIntent(phase);
-      const emotion = pickEmotion(intent);
+    // Pre-generate the first turn so it starts instantly
+    await this.preGenerateNextTurn();
 
-      const prompt = buildPrompt(this.topic, phase, speaker.id, target, intent, this.history);
+    while (this.running && consecutiveErrors < 3) {
+      let turnData = this.nextTurnCache;
+
+      // If cache is empty (due to user interruption input or failure), generate it now
+      if (!turnData) {
+        this.turn++;
+        await this.preGenerateNextTurn();
+        turnData = this.nextTurnCache;
+      }
+
+      if (!turnData) {
+        console.error('Could not obtain turn data.');
+        consecutiveErrors++;
+        await this._delay(2000);
+        continue;
+      }
+
+      this.turn = turnData.turn;
+      const { speaker, target, text, emotion, intent, phase, audioUrl } = turnData;
 
       console.log(`\n[TURN ${this.turn}] ${speaker.id} (${speaker.name}) → ${target} | ${intent}`);
+      console.log(`  "${text.substring(0, 80)}..."`);
 
-      try {
-        const response = await openai.chat.completions.create({
-          model: 'openai/gpt-4o-mini',
-          messages: [{ role: 'user', content: prompt }],
-          max_tokens: 200,
-        });
+      this.currentSpeakerId = speaker.id;
 
-        const text = response.choices[0].message.content.trim();
-        console.log(`  "${text.substring(0, 80)}..."`);
+      this.send({
+        type: 'SPEAK',
+        speaker: speaker.id,
+        speakerName: speaker.name,
+        seatIndex: speaker.seatIndex,
+        target,
+        text,
+        emotion,
+        intent,
+        phase,
+        turn: this.turn,
+        audioUrl: audioUrl || undefined,
+      });
 
+      if (audioUrl) {
         this.send({
-          type: 'SPEAK',
+          type: 'SPEAK_AUDIO',
           speaker: speaker.id,
-          speakerName: speaker.name,
-          seatIndex: speaker.seatIndex,
-          target,
-          text,
-          emotion,
-          intent,
-          phase,
-          turn: this.turn,
+          url: audioUrl,
+          duration: Math.max(2000, text.length * 65 + 1000),
         });
-
-        this.history.push({ speaker: speaker.id, target, phase, intent, message: text, emotion });
-
-        await this._delay(300);
-
-        if (this.speakTimeout) clearTimeout(this.speakTimeout);
-        this.speakTimeout = setTimeout(() => {
-          this.send({ type: 'STOP_SPEAKING', speaker: speaker.id });
-        }, Math.min(text.length * 60, 4000));
-
-        consecutiveErrors = 0;
-
-        if (this.turn % 3 === 0) {
-          await this._askUser();
-        }
-
-        await this._delay(800);
-      } catch (err) {
-        console.error('LLM error:', err.message);
-        consecutiveErrors++;
-        this.send({ type: 'ERROR', message: err.message });
-        await this._delay(2000);
       }
+
+      this.history.push({ speaker: speaker.id, target, phase, intent, message: text, emotion });
+
+      // Start pre-generating the next speaker's turn asynchronously in the background
+      this.nextTurnCache = null;
+      this.preGeneratingPromise = this.preGenerateNextTurn();
+
+      // Wait for the speaking animation to finish
+      const speakDuration = Math.max(2000, text.length * 65 + 1000);
+      await this._delay(speakDuration);
+
+      // Clean up speaking states
+      this.send({ type: 'STOP_SPEAKING', speaker: speaker.id });
+      this.currentSpeakerId = null;
+
+      consecutiveErrors = 0;
+
+      // Wait for the user ONLY if they requested interruption
+      if (this.userWantsToSpeak) {
+        this.userWantsToSpeak = false;
+        await this._askUser();
+      }
+
+      // Await pre-generation to complete before looping
+      if (this.preGeneratingPromise) {
+        await this.preGeneratingPromise;
+        this.preGeneratingPromise = null;
+      }
+
+      await this._delay(600);
     }
 
     if (consecutiveErrors >= 3) {
@@ -242,6 +351,15 @@ class Simulation {
 
   _askUser() {
     return new Promise((resolve) => {
+      if (this.queuedUserMessage !== null) {
+        const msg = this.queuedUserMessage;
+        this.queuedUserMessage = null;
+        this.userWaiting = true;
+        this.handleUserMessage(msg);
+        resolve();
+        return;
+      }
+
       this.userWaiting = true;
       this.send({ type: 'WAITING_FOR_USER', turn: this.turn });
 
@@ -262,12 +380,24 @@ class Simulation {
     this.userWaiting = false;
     if (this.userTimeout) clearTimeout(this.userTimeout);
 
-    this.history.push({
-      speaker: 'USER',
-      target: 'GENERAL',
-      phase: getPhase(this.turn),
-      message: text,
-    });
+    const messageText = (text || '').trim();
+
+    if (messageText) {
+      // Discard pre-generated next turn cache since conversation context has changed
+      this.nextTurnCache = null;
+      this.preGeneratingPromise = null;
+
+      this.history.push({
+        speaker: 'USER',
+        target: 'GENERAL',
+        phase: getPhase(this.turn),
+        message: messageText,
+      });
+      console.log(`User contributed: "${messageText}"`);
+    } else {
+      // User cancelled or silent timeout: keep nextTurnCache and resume instantly!
+      console.log('User cancelled or remained silent. Resuming pre-generated turn.');
+    }
 
     if (this._resolveUser) {
       this._resolveUser();
@@ -275,9 +405,15 @@ class Simulation {
     }
   }
 
+  handleUserInterrupt() {
+    if (!this.running) return;
+    console.log('User requested to speak next (interruption queued).');
+    this.userWantsToSpeak = true;
+  }
+
   stop() {
     this.running = false;
-    if (this.speakTimeout) clearTimeout(this.speakTimeout);
+    this._cancelDelay();
     if (this.userTimeout) clearTimeout(this.userTimeout);
     if (this.userWaiting && this._resolveUser) {
       this._resolveUser();
@@ -287,7 +423,24 @@ class Simulation {
   }
 
   _delay(ms) {
-    return new Promise(r => setTimeout(r, ms));
+    return new Promise((resolve) => {
+      this._delayResolve = resolve;
+      this._delayTimeout = setTimeout(() => {
+        this._delayResolve = null;
+        resolve();
+      }, ms);
+    });
+  }
+
+  _cancelDelay() {
+    if (this._delayTimeout) {
+      clearTimeout(this._delayTimeout);
+      this._delayTimeout = null;
+    }
+    if (this._delayResolve) {
+      this._delayResolve();
+      this._delayResolve = null;
+    }
   }
 }
 
@@ -299,24 +452,28 @@ wss.on('connection', (ws) => {
       const msg = JSON.parse(raw);
 
       if (msg.type === 'START_SIMULATION') {
-        if (currentSimulation) {
-          currentSimulation.stop();
-        }
+        if (currentSimulation) currentSimulation.stop();
         const topic = msg.topic || 'Artificial Intelligence: Boon or Bane for Society?';
         currentSimulation = new Simulation(topic, ws);
         currentSimulation.start();
       }
 
       if (msg.type === 'STOP_SIMULATION') {
-        if (currentSimulation) {
-          currentSimulation.stop();
-        }
+        if (currentSimulation) currentSimulation.stop();
       }
 
       if (msg.type === 'USER_MESSAGE') {
         if (currentSimulation) {
-          currentSimulation.handleUserMessage(msg.text);
+          if (currentSimulation.userWaiting) {
+            currentSimulation.handleUserMessage(msg.text);
+          } else if (currentSimulation.userWantsToSpeak) {
+            currentSimulation.queuedUserMessage = msg.text;
+          }
         }
+      }
+
+      if (msg.type === 'USER_INTERRUPT') {
+        if (currentSimulation) currentSimulation.handleUserInterrupt();
       }
     } catch (err) {
       console.error('WS message error:', err.message);
@@ -325,9 +482,7 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     console.log('Client disconnected');
-    if (currentSimulation) {
-      currentSimulation.stop();
-    }
+    if (currentSimulation) currentSimulation.stop();
   });
 
   ws.send(JSON.stringify({ type: 'CONNECTED' }));
