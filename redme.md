@@ -7,3 +7,7 @@ A real-time 3D simulation of a campus placement Group Discussion featuring multi
 - Queued user interruptions
 - 3D ReadyPlayerMe avatars
 
+## Architecture
+- Native WebSockets for duplex client-server messaging
+- React Event Bus for audio synchronization
+
