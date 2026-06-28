@@ -37,9 +37,9 @@ participants = {
 voice_map = {
     "P1": "en-US-GuyNeural",
     "P2": "en-US-JennyNeural",
-    "P3": "en-US-DavisNeural",
+    "P3": "en-US-BrianNeural",
     "P4": "en-US-AriaNeural",
-    "P5": "en-US-TonyNeural"
+    "P5": "en-US-ChristopherNeural"
 }
 
 # 2. Relationship Graph
