@@ -24,3 +24,6 @@ If the user speaks or types, the interruption is queued on the server, allowing 
 ## Seating & Eye Contact
 Contains a 6-seat table geometry with the 6th seat reserved for the USER, directing all AI gaze targeting to seat 5.
 
+## Troubleshooting
+Check EdgeTTS dependencies if voice files fail to generate.
+
