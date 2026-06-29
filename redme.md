@@ -11,3 +11,7 @@ A real-time 3D simulation of a campus placement Group Discussion featuring multi
 - Native WebSockets for duplex client-server messaging
 - React Event Bus for audio synchronization
 
+## Setup
+1. Install dependencies: npm install
+2. Run server: node server.cjs
+
