@@ -30,3 +30,6 @@ Check EdgeTTS dependencies if voice files fail to generate.
 ## Customizations
 Modify voice maps in server.cjs to add custom speakers.
 
+## License
+MIT License. See LICENSE for details.
+
