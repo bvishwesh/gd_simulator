@@ -15,3 +15,6 @@ A real-time 3D simulation of a campus placement Group Discussion featuring multi
 1. Install dependencies: npm install
 2. Run server: node server.cjs
 
+## Pre-generation Pipeline
+To minimize latency, the next speaker's text and audio are pre-generated in the background while the current speaker is talking.
+
