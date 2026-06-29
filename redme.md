@@ -18,3 +18,6 @@ A real-time 3D simulation of a campus placement Group Discussion featuring multi
 ## Pre-generation Pipeline
 To minimize latency, the next speaker's text and audio are pre-generated in the background while the current speaker is talking.
 
+## Interruption Mechanics
+If the user speaks or types, the interruption is queued on the server, allowing the AI to finish naturally before granting the floor.
+
